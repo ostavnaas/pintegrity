@@ -1,3 +1,4 @@
 file_path:
   - /file_path/photo
   - /other_file_path/photo
+db_file: ./hash.sqlite

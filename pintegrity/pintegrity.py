@@ -10,8 +10,8 @@ from datetime import datetime
 
 
 class File_handle:
-    def __init__(self, config):
-        self.db = Database()
+    def __init__(self, config, db):
+        self.db = db
         self.full_path = []
         for path in config.file_path:
             self.build_file_list(path)
@@ -64,8 +64,8 @@ class File_handle:
 
 
 class Database:
-    def __init__(self):
-        self.conn = sqlite3.connect('hash.sqlite')
+    def __init__(self, connect):
+        self.conn = connect
         self.create_table()
 
     def create_table(self):
@@ -113,5 +113,16 @@ class Config:
             return yaml.load(f)
 
 
-cnf = Config('./config.yaml')
-fh = File_handle(cnf)
+def connect_db(db_file):
+    if db_file == ':memory:':
+        return sqlite3.connect(db_file)
+
+    return sqlite3.connect(os.path.abspath(db_file))
+
+
+if __name__ == '__main__':
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    config_file = os.path.join(current_dir, 'config.yaml')
+    cnf = Config(config_file)
+    db = Database(connect_db(cnf.db_file))
+    fh = File_handle(cnf, db)
