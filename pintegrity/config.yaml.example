@@ -1,0 +1,8 @@
+file_path:
+  - /path/to/photo
+  - /other/path/to/photo
+db_file: ./hash.sqlite
+email:
+  smtp_server: localhost
+  from_addr: root@localhost
+  to_addr: root@localhost

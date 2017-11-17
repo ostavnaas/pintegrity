@@ -5,7 +5,9 @@ import os
 import sqlite3
 import platform
 import yaml
+import logging.handlers
 
+from sys import stdout
 from datetime import datetime
 
 
@@ -15,13 +17,26 @@ class File_handle:
         self.full_path = []
         for path in config.file_path:
             self.build_file_list(path)
+        self.check_for_missing_files()
 
     def __repr__(self):
         return "File_handle(Files: {})".format(len(self.file_path))
 
+    def check_for_missing_files(self):
+        all_files = self.db.query_all_files()
+        for file in all_files:
+            full_path = os.path.join(file[0], file[1])
+            if full_path not in self.full_path:
+                elogger.critical("Missing file: {}".format(full_path))
+
     def build_file_list(self, root_dir):
-        for root, dirs, files in os.walk(root_dir):
+        if '~' in root_dir:
+            root_dir = os.path.expanduser(root_dir)
+        print('Checking files:')
+        for root, dirs, files in os.walk(os.path.abspath(root_dir)):
             for file in files:
+                print('.', end='')
+                stdout.flush()
                 self.full_path.append(os.path.join(root, file))
 
                 if platform.system() == 'Windows':
@@ -35,6 +50,7 @@ class File_handle:
 
                 if file_in_db is None:
                     file_hash = self.hash_file(root, file)
+                    logger.debug('Adding file: %s', os.path.join(root, file))
                     self.db.insert_files('files', **{'file_path': root,
                                                      'file_name': file,
                                                      'last_modify': m_time,
@@ -45,6 +61,7 @@ class File_handle:
                         print(os.path.join(file_in_db[2], file_in_db[3]))
 
         self.db.commit()
+        print('')
 
     def hash_file(self, root, file):
         full_path = os.path.join(root, file)
@@ -64,12 +81,15 @@ class File_handle:
 
 
 class Database:
-    def __init__(self, connect):
-        self.conn = connect
+    def __init__(self, db_file):
+        if db_file == ':memory:':
+            self.connect = sqlite3.connect(db_file)
+        else:
+            self.connect = sqlite3.connect(os.path.abspath(db_file))
         self.create_table()
 
     def create_table(self):
-        c = self.conn.cursor()
+        c = self.connect.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS files (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 file_path TEXT,
@@ -77,10 +97,10 @@ class Database:
                 last_modify TEXT,
                 file_hash TEXT
                 );''')
-        self.conn.commit()
+        self.connect.commit()
 
     def commit(self):
-        self.conn.commit()
+        self.connect.commit()
 
     def build_insert_query(self, table, **kwargs):
         row_names = ", ".join([x for x in kwargs])
@@ -91,15 +111,22 @@ class Database:
         return query, values
 
     def query_file(self, file_path, file_name):
-        c = self.conn.cursor()
+        c = self.connect.cursor()
         c.execute('''SELECT id, file_hash, file_path, file_name
                      FROM files
                      WHERE file_path = "{}" AND file_name = "{}"
                   '''.format(file_path, file_name))
         return c.fetchone()
 
+    def query_all_files(self):
+        c = self.connect.cursor()
+        c.execute('''SELECT file_path, file_name
+                     FROM files
+                  ''')
+        return c.fetchall()
+
     def insert_files(self, table, *args, **kwargs):
-        c = self.conn.cursor()
+        c = self.connect.cursor()
         query, values = self.build_insert_query(table, **kwargs)
         c.execute(query, values)
 
@@ -120,9 +147,36 @@ def connect_db(db_file):
     return sqlite3.connect(os.path.abspath(db_file))
 
 
+def start_logging(cnf):
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    config_file = os.path.join(current_dir, 'config.yaml')
+    cnf = Config(config_file)
+
+    logger = logging.getLogger(__name__)
+
+    handler = logging.FileHandler('file_handle.log')
+    fm = logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s")
+    handler.setFormatter(fm)
+
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+
+    elogger = logging.getLogger('Exception')
+    ehandler = logging.handlers.SMTPHandler(cnf.email['smtp_server'],
+                                            cnf.email['from_addr'],
+                                            cnf.email['to_addr'],
+                                            'pintegrity')
+    ehandler.setFormatter(fm)
+    elogger.addHandler(ehandler)
+    elogger.setLevel(logging.INFO)
+    return elogger, logger
+
+
 if __name__ == '__main__':
     current_dir = os.path.dirname(os.path.abspath(__file__))
     config_file = os.path.join(current_dir, 'config.yaml')
     cnf = Config(config_file)
-    db = Database(connect_db(cnf.db_file))
+    elogger, logger = start_logging(cnf)
+
+    db = Database(cnf.db_file)
     fh = File_handle(cnf, db)
