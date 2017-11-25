@@ -1,4 +1,6 @@
 *.pyc
 *.sqlite
 *.log
+*.swp
+.cache
 config.yaml

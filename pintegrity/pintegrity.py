@@ -9,12 +9,13 @@ import logging.handlers
 
 from sys import stdout
 from datetime import datetime
+from pprint import pprint
 
 
 class File_handle:
     def __init__(self, config, db):
         self.db = db
-        self.full_path = []
+        self.current_files = []
         for path in config.file_path:
             self.build_file_list(path)
         self.check_for_missing_files()
@@ -23,21 +24,23 @@ class File_handle:
         return "File_handle(Files: {})".format(len(self.file_path))
 
     def check_for_missing_files(self):
-        all_files = self.db.query_all_files()
-        for file in all_files:
-            full_path = os.path.join(file[0], file[1])
-            if full_path not in self.full_path:
-                elogger.critical("Missing file: {}".format(full_path))
+        for row in self.db.query_all_files():
+            file_in_db = os.path.join(row[1], row[2])
+            if file_in_db not in self.current_files:
+                elogger.critical("Missing file: {}".format(file_in_db))
+                self.db.set_as_missing_file(row[0])
+        self.db.commit()
 
     def build_file_list(self, root_dir):
         if '~' in root_dir:
             root_dir = os.path.expanduser(root_dir)
+
         print('Checking files:')
         for root, dirs, files in os.walk(os.path.abspath(root_dir)):
             for file in files:
                 print('.', end='')
                 stdout.flush()
-                self.full_path.append(os.path.join(root, file))
+                self.current_files.append(os.path.join(root, file))
 
                 if platform.system() == 'Windows':
                     stat = os.path.getctime(os.path.join(root, file))
@@ -54,11 +57,17 @@ class File_handle:
                     self.db.insert_files('files', **{'file_path': root,
                                                      'file_name': file,
                                                      'last_modify': m_time,
-                                                     'file_hash': file_hash})
+                                                     'file_hash': file_hash,
+                                                     'file_removed': '0',
+                                                     'file_corrupted': '0'})
                 else:
                     file_hash = self.hash_file(root, file)
                     if file_in_db[1] != file_hash:
-                        print(os.path.join(file_in_db[2], file_in_db[3]))
+                        corrupt_file = os.path.join(file_in_db[1],
+                                                    file_in_db[2])
+                        print(os.path.join(file_in_db[1], file_in_db[2]))
+                        elogger.critical("""File corrupted: {}
+                                         """.format(corrupt_file))
 
         self.db.commit()
         print('')
@@ -91,28 +100,30 @@ class Database:
     def create_table(self):
         c = self.connect.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_path TEXT,
-                file_name TEXT,
-                last_modify TEXT,
-                file_hash TEXT
-                );''')
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        file_path TEXT,
+                        file_name TEXT,
+                        last_modify TEXT,
+                        file_hash TEXT,
+                        file_removed TEXT,
+                        file_corrupted TEXT
+                     );''')
         self.connect.commit()
 
     def commit(self):
         self.connect.commit()
 
     def build_insert_query(self, table, **kwargs):
-        row_names = ", ".join([x for x in kwargs])
-        question_mark = ", ".join(["?" for x in kwargs])
-        values = tuple([kwargs[x] for x in kwargs])
+        row_names = ", ".join([x for x in sorted(kwargs)])
+        question_mark = ", ".join(["?" for x in sorted(kwargs)])
+        values = tuple([kwargs[x] for x in sorted(kwargs)])
         query = 'INSERT INTO {}({}) VALUES ({})'.format(table, row_names,
                                                         question_mark)
         return query, values
 
     def query_file(self, file_path, file_name):
         c = self.connect.cursor()
-        c.execute('''SELECT id, file_hash, file_path, file_name
+        c.execute('''SELECT id, file_path, file_name, file_hash
                      FROM files
                      WHERE file_path = "{}" AND file_name = "{}"
                   '''.format(file_path, file_name))
@@ -120,15 +131,28 @@ class Database:
 
     def query_all_files(self):
         c = self.connect.cursor()
-        c.execute('''SELECT file_path, file_name
+        c.execute('''SELECT id, file_path, file_name
                      FROM files
+                     WHERE file_removed = "0" AND file_corrupted = "0"
                   ''')
-        return c.fetchall()
+        while True:
+            result = c.fetchone()
+            if not result:
+                break
+            else:
+                yield result
 
     def insert_files(self, table, *args, **kwargs):
         c = self.connect.cursor()
         query, values = self.build_insert_query(table, **kwargs)
         c.execute(query, values)
+
+    def set_as_missing_file(self, row_id):
+        c = self.connect.cursor()
+        query = '''UPDATE files
+                   SET file_removed = 1
+                   WHERE id = ?;'''
+        c.execute(query, (row_id,))
 
 
 class Config:
